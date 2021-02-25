@@ -39,7 +39,7 @@ if __name__ == '__main__':
            result=receive() 
            print (result)
            #send message
-	       echoclient.c_wrap_send()
+           echoclient.c_wrap_send()
 
           
    
