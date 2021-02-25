@@ -1,12 +1,44 @@
-#include "../tcpshm_client.h"
+#include "tcpshm_client.h"
 #include <bits/stdc++.h>
+#include <Python.h>
 #include "timestamp.h"
 #include "common.h"
 #include "cpupin.h"
 
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include<cstring>
+#include<iostream>
+
 using namespace std;
 using namespace tcpshm;
+void executeCMD(const char *cmd, char *result)   
+{   
+    char buf_ps[1024];   
+    char ps[1024]={0};   
+    FILE *ptr;   
+    strcpy(ps, cmd);   
+    if((ptr=popen(ps, "r"))!=NULL)   
+    {   
+        while(fgets(buf_ps, 1024, ptr)!=NULL)   
+        {   
+           strcat(result, buf_ps);   
+           if(strlen(result)>1024)   
+               break;   
+        }   
+        pclose(ptr);   
+        ptr = NULL;   
+    }   
+    else  
+    {   
+        printf("popen %s error\n", ps);   
+    }   
+}
 
+
+//using namespace boost::python; 
 struct ClientConf : public CommonConf
 {
   static const int64_t NanoInSecond = 1000000000LL;
@@ -54,18 +86,13 @@ public:
                 if(do_cpupin) cpupin(7);
                 start_time = now();
                 while(!conn.IsClosed()) {
-                    if(PollNum()) {    //发送数字
-                        stop_time = now();
-                        conn.Close();
-                        break;
-                    }
                     PollShm();  //从共享内存中提取服务器发送回来的数字
                 }
             });
 
             // we still need to poll tcp for heartbeats even if using shm
             while(!conn.IsClosed()) {
-              PollTcp(now());    //确认主机还连接着，这个进程和上面的并列
+              PollTcp(now());   
             }
             shm_thr.join();
         }
@@ -78,7 +105,7 @@ public:
                     conn.Close();
                     break;
                 }
-                PollTcp(now());    //从socket中提取消息
+                PollTcp(now());    
             }
         }
         uint64_t latency = stop_time - start_time;
@@ -86,6 +113,16 @@ public:
         cout << "client stopped, send_num: " << *send_num << " recv_num: " << *recv_num << " latency: " << latency
              << " avg rtt: " << (msg_sent > 0 ? (double)latency / msg_sent : 0.0) << " ns" << endl;
     }
+    
+     bool send_msg()
+    {
+       PollNum();
+    }
+
+    string receive_msg()
+   {
+       return received_msg;
+   }
 
 private:
     bool PollNum() {
@@ -115,7 +152,6 @@ private:
         header->msg_type = T::msg_type;
         T* msg = (T*)(header + 1);
         for(auto& v : msg->val) {
-            // convert to configurated network byte order, don't need this if you know server is using the same endian
             v = Endian<ClientConf::ToLittleEndian>::Convert((*send_num)++);
         }
         conn.Push();
@@ -132,22 +168,25 @@ private:
                 cout << "bad: v: " << v << " recv_num: " << (*recv_num) << endl;
                 exit(1);
             }
+            
             (*recv_num)++;
+            //send received message to python
+            received_msg=to_string(*recv_num);
         }
     }
 
 private:
     friend TSClient;
-    // called within Connect()
-    // reporting errors on connecting to the server
+
     void OnSystemError(const char* error_msg, int sys_errno) {
-        cout << "System Error: " << error_msg << " syserrno: " << strerror(sys_errno) << endl;
+        received_msg="";
+        received_msg="System Error: "+string(error_msg)+ " syserrno: " +string(strerror(sys_errno));
     }
 
     // called within Connect()
     // Login rejected by server
     void OnLoginReject(const LoginRspMsg* login_rsp) {
-        cout << "Login Rejected: " << login_rsp->error_msg << endl;
+         cout << "Login Rejected: " << login_rsp->error_msg << endl;
     }
 
     // called within Connect()
@@ -165,7 +204,7 @@ private:
                              uint32_t remote_ack_seq,
                              uint32_t remote_seq_start,
                              uint32_t remote_seq_end) {
-        cout << "Seq number mismatch, name: " << conn.GetRemoteName() << " ptcp file: " << conn.GetPtcpFile()
+          cout << "Seq number mismatch, name: " << conn.GetRemoteName() << " ptcp file: " << conn.GetPtcpFile()
              << " local_ack_seq: " << local_ack_seq << " local_seq_start: " << local_seq_start
              << " local_seq_end: " << local_seq_end << " remote_ack_seq: " << remote_ack_seq
              << " remote_seq_start: " << remote_seq_start << " remote_seq_end: " << remote_seq_end << endl;
@@ -201,20 +240,35 @@ private:
     bool do_cpupin = true;
     int* send_num;
     int* recv_num;
+    string received_msg="";
 };
 
-int main(int argc, const char** argv) {
-    if(argc != 4) {
-        cout << "usage: echo_client NAME SERVER_IP USE_SHM[0|1]" << endl;
-        exit(1);
-    }
-    const char* name = argv[1];
-    const char* server_ip = argv[2];
-    bool use_shm = argv[3][0] != '0';
 
-    EchoClient client(name, name);
-    client.Run(use_shm, server_ip, 12345);
 
-    return 0;
+
+
+void* get_instance(const std::string& ptcp_dir, const std::string& name) {
+    EchoClient *ins = new EchoClient(ptcp_dir,name);
+    return (void*) ins;
+}
+
+void* Run(void* ins,bool use_shm, const char* server_ipv4, uint16_t server_port) {
+    EchoClient *loc_ins = (EchoClient*) ins;
+    loc_ins->Run(use_shm,server_ipv4,server_port);
+    return (void*)loc_ins;
+}
+
+//send message
+void* send(void* ins) {
+    EchoClient *loc_ins = (EchoClient*) ins;
+    loc_ins->send_msg();
+    return (void*)loc_ins;
+}
+
+//receive mesage. The message is saved in "result".
+void* receive(void* ins,string& result) {
+    EchoClient *loc_ins = (EchoClient*) ins;
+    result=loc_ins->receive_msg();
+    return (void*)loc_ins;
 }
 

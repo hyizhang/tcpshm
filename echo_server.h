@@ -1,4 +1,4 @@
-#include "../tcpshm_server.h"
+#include "tcpshm_server.h"
 #include <bits/stdc++.h>
 #include "timestamp.h"
 #include "common.h"
@@ -178,10 +178,14 @@ private:
 
 volatile bool EchoServer::stopped = false;
 
-int main() {
-
-    EchoServer server("server", "server");
-    server.Run("0.0.0.0", 12345);
-
-    return 0;
+void* get_instance(const std::string& ptcp_dir, const std::string& name) {
+    EchoServer *ins = new EchoServer(ptcp_dir,name);
+    return (void*) ins;
 }
+
+void* Run(void* ins,const char* listen_ipv4, uint16_t listen_port) {
+    EchoServer *loc_ins = (EchoServer*) ins;
+    loc_ins->Run(listen_ipv4,listen_port);
+    return (void*)loc_ins;
+}
+
